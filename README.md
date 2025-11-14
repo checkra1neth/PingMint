@@ -28,7 +28,7 @@ MINT_COUNT=5
 
 # Опционально: автоматическая отправка NFT друзьям
 TRANSFER_ENABLED=false
-TRANSFER_ADDRESSES=0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb1,0x123...abc
+TRANSFER_ADDRESSES=0x742d35Cc6634C0532925a****4Bc9e7595f0bEb1,0x123...abc
 ```
 
 ## 💡 Использование
@@ -59,7 +59,7 @@ python mint_netpackets.py
 
 ```env
 TRANSFER_ENABLED=true
-TRANSFER_ADDRESSES=0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb1,0xAnotherAddress,0xYetAnotherAddress
+TRANSFER_ADDRESSES=0x742d35Cc663****32925a3b844Bc9e7595f0bEb1,0xAnotherAddress,0xYetAnotherAddress
 ```
 
 Скрипт отправит по одному NFT на каждый адрес в порядке минта. Если адресов меньше чем NFT, оставшиеся останутся у вас.
@@ -116,7 +116,7 @@ Choose transfer mode:
 Enter mode (1 or 2): 1
 
 How many NFTs to transfer? (max 100): 14
-Enter recipient address: 0x1608ba245F47Bd35215538413164761B2e9305f5
+Enter recipient address: 0x1608ba245F47Bd******38413164761B2e9305f5
 
 Proceed? (y/n): y
 
@@ -124,7 +124,7 @@ Proceed? (y/n): y
 ⚡ BATCH TRANSFER (ONE Transaction)
 ============================================================
 📦 Tokens: 14 NFTs
-📬 To: 0x1608ba245F47Bd35215538413164761B2e9305f5
+📬 To: 0x1608ba245F47Bd******38413164761B2e9305f5
 ============================================================
 
 ✅ BATCH TRANSFER SUCCESSFUL!
