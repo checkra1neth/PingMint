@@ -82,14 +82,26 @@ python batch_transfer.py
   - Каждый NFT на свой адрес
   - Быстрая последовательная обработка
 
-**Пример использования:**
+**Пример использования (автоматический режим):**
 ```bash
-# Запустить скрипт
 python batch_transfer.py
 
-# Выбрать режим 1 (один получатель)
-# Ввести: 1,2,3,4,5,6,7,8,9,10 (token IDs)
-# Ввести: 0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb1 (адрес получателя)
+Choose input mode:
+1. Auto-detect my NFTs (just enter count + address)  ← Выбираем этот!
+2. Manual token IDs (enter specific IDs)
+
+Enter mode (1 or 2): 1
+
+# Скрипт автоматически найдет все ваши NFT
+
+How many NFTs to transfer? (max 50): 40
+Enter recipient address: 0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb1
+```
+
+**Ручной режим (если нужны конкретные token IDs):**
+```bash
+Enter mode (1 or 2): 2
+Enter token IDs (comma-separated): 1,2,3,4,5,6,7,8,9,10
 ```
 
 **Преимущества rapid sequential transfer:**

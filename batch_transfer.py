@@ -75,6 +75,40 @@ class BatchTransfer:
         print(f"📍 Wallet address: {self.address}")
         print(f"💰 ETH Balance: {self.w3.from_wei(self.w3.eth.get_balance(self.address), 'ether')} ETH\n")
     
+    def get_my_nfts(self, max_check=1000):
+        """Get list of NFT token IDs owned by this wallet"""
+        print(f"🔍 Scanning for your NFTs (checking up to token #{max_check})...")
+        
+        my_nfts = []
+        checked = 0
+        
+        # Check tokens in batches for speed
+        for token_id in range(1, max_check + 1):
+            try:
+                owner = self.netpackets.functions.ownerOf(token_id).call()
+                if owner.lower() == self.address.lower():
+                    my_nfts.append(token_id)
+                checked += 1
+                
+                # Progress indicator every 50 tokens
+                if checked % 50 == 0:
+                    print(f"  ⏳ Checked {checked} tokens, found {len(my_nfts)} yours...")
+                    
+            except Exception:
+                # Token doesn't exist or error - skip
+                pass
+        
+        print(f"✅ Found {len(my_nfts)} NFTs in your wallet")
+        if my_nfts:
+            # Show first 10 for preview
+            preview = my_nfts[:10]
+            preview_str = ", ".join(map(str, preview))
+            if len(my_nfts) > 10:
+                preview_str += f", ... (+{len(my_nfts) - 10} more)"
+            print(f"📦 Your NFTs: {preview_str}\n")
+        
+        return my_nfts
+    
     def batch_transfer_single_tx(self, token_ids, to_address):
         """Transfer multiple NFTs in a single transaction using batchTransferFrom"""
         print(f"\n{'='*60}")
@@ -283,41 +317,96 @@ def main():
     try:
         batch = BatchTransfer()
         
-        print("Choose transfer mode:")
-        print("1. Batch transfer to ONE address (all NFTs in single or rapid transactions)")
-        print("2. Transfer to MULTIPLE addresses (one NFT per address)")
+        print("Choose input mode:")
+        print("1. Auto-detect my NFTs (just enter count + address)")
+        print("2. Manual token IDs (enter specific IDs)")
         
-        mode = input("\nEnter mode (1 or 2): ").strip()
+        input_mode = input("\nEnter mode (1 or 2): ").strip()
         
-        if mode == "1":
-            # Batch to one address
-            token_ids_input = input("\nEnter token IDs (comma-separated): ").strip()
-            token_ids = [int(x.strip()) for x in token_ids_input.split(",") if x.strip()]
+        if input_mode == "1":
+            # Auto-detect NFTs
+            my_nfts = batch.get_my_nfts()
             
-            to_address = input("Enter recipient address: ").strip()
+            if not my_nfts:
+                print("❌ No NFTs found in your wallet!")
+                return
             
-            print(f"\n📦 Will transfer {len(token_ids)} NFTs to {to_address}")
-            confirm = input("Proceed? (y/n): ").strip().lower()
+            print("Choose transfer mode:")
+            print("1. Transfer to ONE address")
+            print("2. Transfer to MULTIPLE addresses")
             
-            if confirm == 'y':
-                batch.batch_transfer_single_tx(token_ids, to_address)
+            mode = input("\nEnter mode (1 or 2): ").strip()
+            
+            if mode == "1":
+                # Transfer to one address
+                count = input(f"\nHow many NFTs to transfer? (max {len(my_nfts)}): ").strip()
+                count = int(count)
+                
+                if count > len(my_nfts):
+                    print(f"⚠️  You only have {len(my_nfts)} NFTs. Transferring all.")
+                    count = len(my_nfts)
+                
+                token_ids = my_nfts[:count]
+                to_address = input("Enter recipient address: ").strip()
+                
+                print(f"\n📦 Will transfer {len(token_ids)} NFTs to {to_address}")
+                print(f"🎫 Token IDs: {', '.join(map(str, token_ids))}")
+                confirm = input("\nProceed? (y/n): ").strip().lower()
+                
+                if confirm == 'y':
+                    batch.batch_transfer_single_tx(token_ids, to_address)
+            
+            elif mode == "2":
+                # Transfer to multiple addresses
+                addresses_input = input("\nEnter addresses (comma-separated): ").strip()
+                addresses = [x.strip() for x in addresses_input.split(",") if x.strip()]
+                
+                count = min(len(my_nfts), len(addresses))
+                token_ids = my_nfts[:count]
+                
+                print(f"\n📦 Will transfer {count} NFTs to {len(addresses)} addresses")
+                confirm = input("Proceed? (y/n): ").strip().lower()
+                
+                if confirm == 'y':
+                    batch.transfer_to_multiple(token_ids, addresses)
         
-        elif mode == "2":
-            # Multiple addresses
-            token_ids_input = input("\nEnter token IDs (comma-separated): ").strip()
-            token_ids = [int(x.strip()) for x in token_ids_input.split(",") if x.strip()]
+        elif input_mode == "2":
+            # Manual mode
+            print("\nChoose transfer mode:")
+            print("1. Batch transfer to ONE address")
+            print("2. Transfer to MULTIPLE addresses")
             
-            addresses_input = input("Enter addresses (comma-separated): ").strip()
-            addresses = [x.strip() for x in addresses_input.split(",") if x.strip()]
+            mode = input("\nEnter mode (1 or 2): ").strip()
             
-            print(f"\n📦 Will transfer {len(token_ids)} NFTs to {len(addresses)} addresses")
-            confirm = input("Proceed? (y/n): ").strip().lower()
-            
-            if confirm == 'y':
-                batch.transfer_to_multiple(token_ids, addresses)
+            if mode == "1":
+                # Batch to one address
+                token_ids_input = input("\nEnter token IDs (comma-separated): ").strip()
+                token_ids = [int(x.strip()) for x in token_ids_input.split(",") if x.strip()]
+                
+                to_address = input("Enter recipient address: ").strip()
+                
+                print(f"\n📦 Will transfer {len(token_ids)} NFTs to {to_address}")
+                confirm = input("Proceed? (y/n): ").strip().lower()
+                
+                if confirm == 'y':
+                    batch.batch_transfer_single_tx(token_ids, to_address)
+        
+            elif mode == "2":
+                # Multiple addresses
+                token_ids_input = input("\nEnter token IDs (comma-separated): ").strip()
+                token_ids = [int(x.strip()) for x in token_ids_input.split(",") if x.strip()]
+                
+                addresses_input = input("Enter addresses (comma-separated): ").strip()
+                addresses = [x.strip() for x in addresses_input.split(",") if x.strip()]
+                
+                print(f"\n📦 Will transfer {len(token_ids)} NFTs to {len(addresses)} addresses")
+                confirm = input("Proceed? (y/n): ").strip().lower()
+                
+                if confirm == 'y':
+                    batch.transfer_to_multiple(token_ids, addresses)
         
         else:
-            print("Invalid mode selected")
+            print("Invalid input mode selected")
             
     except KeyboardInterrupt:
         print("\n\n⚠️  Interrupted by user")
