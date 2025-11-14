@@ -75,14 +75,115 @@ class BatchTransfer:
         print(f"📍 Wallet address: {self.address}")
         print(f"💰 ETH Balance: {self.w3.from_wei(self.w3.eth.get_balance(self.address), 'ether')} ETH\n")
     
-    def get_my_nfts(self, max_check=1000):
-        """Get list of NFT token IDs owned by this wallet"""
-        print(f"🔍 Scanning for your NFTs (checking up to token #{max_check})...")
+    def get_my_nfts(self, method="events", blocks_back=50000):
+        """Get list of NFT token IDs owned by this wallet
+        
+        Args:
+            method: "events" (fast, recommended) or "scan" (slow, checks all IDs)
+            blocks_back: How many blocks back to check for Transfer events
+        """
+        if method == "events":
+            return self._get_nfts_from_events(blocks_back)
+        else:
+            return self._get_nfts_by_scanning()
+    
+    def _get_nfts_from_events(self, blocks_back=50000):
+        """Fast method: Get NFTs by scanning Transfer events"""
+        print(f"🔍 Scanning Transfer events (last {blocks_back:,} blocks)...")
+        
+        current_block = self.w3.eth.block_number
+        from_block = max(0, current_block - blocks_back)
+        
+        # Transfer event signature: Transfer(address indexed from, address indexed to, uint256 indexed tokenId)
+        transfer_topic = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+        
+        # Get all transfers TO this address
+        print(f"  📥 Checking transfers TO your wallet...")
+        my_address_padded = "0x" + self.address[2:].lower().zfill(64)
+        
+        potential_nfts = set()
+        
+        try:
+            # Get logs in chunks to avoid RPC limits
+            chunk_size = 10000
+            for chunk_start in range(from_block, current_block + 1, chunk_size):
+                chunk_end = min(chunk_start + chunk_size - 1, current_block)
+                
+                logs = self.w3.eth.get_logs({
+                    'fromBlock': chunk_start,
+                    'toBlock': chunk_end,
+                    'address': NETPACKETS_CONTRACT,
+                    'topics': [transfer_topic, None, my_address_padded]
+                })
+                
+                for log in logs:
+                    if len(log['topics']) >= 4:
+                        token_id = int(log['topics'][3].hex(), 16)
+                        potential_nfts.add(token_id)
+                
+                if chunk_end >= current_block:
+                    break
+                    
+                print(f"  ⏳ Processed blocks {chunk_start:,} - {chunk_end:,}, found {len(potential_nfts)} potential NFTs...")
+        
+        except Exception as e:
+            print(f"  ⚠️  Error getting events: {e}")
+            print(f"  💡 Falling back to direct balance check...")
+            return self._get_nfts_by_balance()
+        
+        print(f"  ✅ Found {len(potential_nfts)} NFTs received")
+        
+        # Now verify which ones we still own
+        if not potential_nfts:
+            return []
+        
+        print(f"  🔍 Verifying current ownership...")
+        my_nfts = []
+        
+        for token_id in sorted(potential_nfts):
+            try:
+                owner = self.netpackets.functions.ownerOf(token_id).call()
+                if owner.lower() == self.address.lower():
+                    my_nfts.append(token_id)
+            except Exception:
+                # Token might have been burned
+                pass
+        
+        print(f"✅ You currently own {len(my_nfts)} NFTs")
+        if my_nfts:
+            preview = my_nfts[:10]
+            preview_str = ", ".join(map(str, preview))
+            if len(my_nfts) > 10:
+                preview_str += f", ... (+{len(my_nfts) - 10} more)"
+            print(f"📦 Your NFTs: {preview_str}\n")
+        
+        return my_nfts
+    
+    def _get_nfts_by_balance(self):
+        """Try to get NFTs using balanceOf and tokenOfOwnerByIndex if available"""
+        try:
+            balance = self.netpackets.functions.balanceOf(self.address).call()
+            print(f"  📊 Balance shows: {balance} NFTs")
+            
+            if balance == 0:
+                return []
+            
+            # Contract might not have tokenOfOwnerByIndex, so we'll need manual scan
+            print(f"  ⚠️  Cannot get specific token IDs automatically")
+            print(f"  💡 Please use manual mode or increase scan range\n")
+            return []
+            
+        except Exception as e:
+            print(f"  ⚠️  Could not check balance: {e}")
+            return []
+    
+    def _get_nfts_by_scanning(self, max_check=5000):
+        """Slow method: Check each token ID individually"""
+        print(f"🔍 Scanning token IDs (checking up to #{max_check})...")
         
         my_nfts = []
         checked = 0
         
-        # Check tokens in batches for speed
         for token_id in range(1, max_check + 1):
             try:
                 owner = self.netpackets.functions.ownerOf(token_id).call()
@@ -90,17 +191,14 @@ class BatchTransfer:
                     my_nfts.append(token_id)
                 checked += 1
                 
-                # Progress indicator every 50 tokens
-                if checked % 50 == 0:
+                if checked % 100 == 0:
                     print(f"  ⏳ Checked {checked} tokens, found {len(my_nfts)} yours...")
                     
             except Exception:
-                # Token doesn't exist or error - skip
                 pass
         
         print(f"✅ Found {len(my_nfts)} NFTs in your wallet")
         if my_nfts:
-            # Show first 10 for preview
             preview = my_nfts[:10]
             preview_str = ", ".join(map(str, preview))
             if len(my_nfts) > 10:
