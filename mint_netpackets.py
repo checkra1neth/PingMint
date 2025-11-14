@@ -55,6 +55,24 @@ NETPACKETS_ABI = [
         "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
         "stateMutability": "nonpayable",
         "type": "function"
+    },
+    {
+        "inputs": [
+            {"internalType": "address", "name": "from", "type": "address"},
+            {"internalType": "address", "name": "to", "type": "address"},
+            {"internalType": "uint256", "name": "tokenId", "type": "uint256"}
+        ],
+        "name": "transferFrom",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [{"internalType": "address", "name": "owner", "type": "address"}],
+        "name": "balanceOf",
+        "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function"
     }
 ]
 
@@ -72,6 +90,11 @@ class NetPacketsMinter:
             
         self.private_key = private_key
         self.mint_count = int(os.getenv("MINT_COUNT", "5"))
+        
+        # Transfer settings
+        self.transfer_enabled = os.getenv("TRANSFER_ENABLED", "false").lower() == "true"
+        transfer_addresses = os.getenv("TRANSFER_ADDRESSES", "")
+        self.transfer_addresses = [addr.strip() for addr in transfer_addresses.split(",") if addr.strip()]
         
         # Initialize Web3
         self.w3 = Web3(Web3.HTTPProvider(self.rpc_url))
@@ -96,6 +119,10 @@ class NetPacketsMinter:
         print(f"✅ Connected to Base network")
         print(f"📍 Wallet address: {self.address}")
         print(f"💰 ETH Balance: {self.w3.from_wei(self.w3.eth.get_balance(self.address), 'ether')} ETH")
+        
+        if self.transfer_enabled and self.transfer_addresses:
+            print(f"🎁 Transfer mode: ENABLED")
+            print(f"📬 Recipients: {len(self.transfer_addresses)} addresses")
         
     def check_usdc_balance(self):
         """Check USDC balance"""
@@ -161,7 +188,7 @@ class NetPacketsMinter:
             return False
     
     def mint_nft(self, mint_number):
-        """Mint a single NFT"""
+        """Mint a single NFT and return token ID if successful"""
         print(f"\n{'='*50}")
         print(f"🎨 Minting NFT #{mint_number}/{self.mint_count}")
         print(f"{'='*50}")
@@ -195,16 +222,78 @@ class NetPacketsMinter:
                 gas_price_gwei = self.w3.from_wei(effective_gas_price, 'gwei')
                 gas_cost_eth = self.w3.from_wei(gas_used * effective_gas_price, 'ether')
                 
+                # Extract token ID from logs
+                token_id = None
+                for log in receipt['logs']:
+                    if log['topics'] and len(log['topics']) > 3:
+                        # Transfer event: Transfer(address indexed from, address indexed to, uint256 indexed tokenId)
+                        if log['topics'][0].hex() == '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef':
+                            token_id = int(log['topics'][3].hex(), 16)
+                            break
+                
                 print(f"✅ Mint #{mint_number} successful!")
+                if token_id:
+                    print(f"🎫 Token ID: {token_id}")
+                print(f"⛽ Gas used: {gas_used} ({gas_price_gwei:.2f} Gwei)")
+                print(f"💸 Transaction cost: {gas_cost_eth:.6f} ETH")
+                return token_id
+            else:
+                print(f"❌ Mint #{mint_number} failed!")
+                return None
+                
+        except Exception as e:
+            print(f"❌ Error minting NFT #{mint_number}: {e}")
+            return None
+    
+    def transfer_nft(self, token_id, to_address, transfer_number):
+        """Transfer NFT to another address"""
+        print(f"\n{'='*50}")
+        print(f"🎁 Transferring Token #{token_id} ({transfer_number})")
+        print(f"📬 To: {to_address}")
+        print(f"{'='*50}")
+        
+        try:
+            # Build transaction
+            tx = self.netpackets.functions.transferFrom(
+                self.address,
+                Web3.to_checksum_address(to_address),
+                token_id
+            ).build_transaction({
+                'from': self.address,
+                'nonce': self.w3.eth.get_transaction_count(self.address),
+            })
+            
+            # Display gas info
+            base_fee = self.w3.eth.get_block('latest')['baseFeePerGas']
+            print(f"⛽ Network base fee: {self.w3.from_wei(base_fee, 'gwei'):.2f} Gwei")
+            
+            # Sign and send
+            signed_tx = self.w3.eth.account.sign_transaction(tx, self.private_key)
+            tx_hash = self.w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+            
+            print(f"📤 Transfer TX: {tx_hash.hex()}")
+            print(f"🔗 https://basescan.org/tx/{tx_hash.hex()}")
+            
+            # Wait for confirmation
+            print(f"⏳ Waiting for confirmation...")
+            receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+            
+            if receipt['status'] == 1:
+                gas_used = receipt['gasUsed']
+                effective_gas_price = receipt['effectiveGasPrice']
+                gas_price_gwei = self.w3.from_wei(effective_gas_price, 'gwei')
+                gas_cost_eth = self.w3.from_wei(gas_used * effective_gas_price, 'ether')
+                
+                print(f"✅ Transfer successful!")
                 print(f"⛽ Gas used: {gas_used} ({gas_price_gwei:.2f} Gwei)")
                 print(f"💸 Transaction cost: {gas_cost_eth:.6f} ETH")
                 return True
             else:
-                print(f"❌ Mint #{mint_number} failed!")
+                print(f"❌ Transfer failed!")
                 return False
                 
         except Exception as e:
-            print(f"❌ Error minting NFT #{mint_number}: {e}")
+            print(f"❌ Error transferring NFT: {e}")
             return False
     
     def run(self):
@@ -231,12 +320,14 @@ class NetPacketsMinter:
         # Mint NFTs
         successful_mints = 0
         failed_mints = 0
+        minted_token_ids = []
         
         for i in range(1, self.mint_count + 1):
-            success = self.mint_nft(i)
+            token_id = self.mint_nft(i)
             
-            if success:
+            if token_id is not None:
                 successful_mints += 1
+                minted_token_ids.append(token_id)
             else:
                 failed_mints += 1
                 response = input("\n❓ Continue to next mint? (y/n): ")
@@ -250,14 +341,59 @@ class NetPacketsMinter:
                 print(f"\n⏳ Waiting {wait_time} seconds before next mint...")
                 time.sleep(wait_time)
         
-        # Summary
+        # Minting Summary
         print(f"\n{'='*50}")
         print(f"📊 MINTING SUMMARY")
         print(f"{'='*50}")
         print(f"✅ Successful: {successful_mints}")
         print(f"❌ Failed: {failed_mints}")
         print(f"📦 Total: {successful_mints + failed_mints}/{self.mint_count}")
+        if minted_token_ids:
+            print(f"🎫 Token IDs: {', '.join(map(str, minted_token_ids))}")
         print(f"{'='*50}\n")
+        
+        # Transfer NFTs if enabled
+        if self.transfer_enabled and self.transfer_addresses and minted_token_ids:
+            print(f"\n{'='*50}")
+            print(f"🎁 STARTING NFT TRANSFERS")
+            print(f"{'='*50}\n")
+            
+            time.sleep(3)
+            
+            successful_transfers = 0
+            failed_transfers = 0
+            
+            for idx, token_id in enumerate(minted_token_ids):
+                if idx >= len(self.transfer_addresses):
+                    print(f"\n⚠️  No more recipient addresses. {len(minted_token_ids) - idx} NFTs will stay in your wallet.")
+                    break
+                
+                to_address = self.transfer_addresses[idx]
+                success = self.transfer_nft(token_id, to_address, idx + 1)
+                
+                if success:
+                    successful_transfers += 1
+                else:
+                    failed_transfers += 1
+                    response = input("\n❓ Continue to next transfer? (y/n): ")
+                    if response.lower() != 'y':
+                        print("❌ Transfers aborted by user")
+                        break
+                
+                # Wait between transfers (except for the last one)
+                if idx < len(minted_token_ids) - 1 and idx < len(self.transfer_addresses) - 1:
+                    wait_time = 2
+                    print(f"\n⏳ Waiting {wait_time} seconds before next transfer...")
+                    time.sleep(wait_time)
+            
+            # Transfer Summary
+            print(f"\n{'='*50}")
+            print(f"📊 TRANSFER SUMMARY")
+            print(f"{'='*50}")
+            print(f"✅ Successful: {successful_transfers}")
+            print(f"❌ Failed: {failed_transfers}")
+            print(f"📦 Total: {successful_transfers + failed_transfers}/{len(minted_token_ids)}")
+            print(f"{'='*50}\n")
 
 
 def main():
