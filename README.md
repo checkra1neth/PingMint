@@ -25,7 +25,7 @@ cp .env.example .env
 BASE_RPC_URL=https://mainnet.base.org
 PRIVATE_KEY=ваш_приватный_ключ_без_0x
 MINT_COUNT=5
-GAS_MULTIPLIER=1.2
+
 ```
 
 ## 💡 Использование
@@ -46,7 +46,6 @@ python mint_netpackets.py
 - `BASE_RPC_URL` - RPC endpoint для Base сети
 - `PRIVATE_KEY` - приватный ключ вашего кошелька (БЕЗ префикса 0x)
 - `MINT_COUNT` - количество NFT для минта
-- `GAS_MULTIPLIER` - множитель для gas price (1.2 = +20% для ускорения)
 
 ## 📝 Контракты
 
