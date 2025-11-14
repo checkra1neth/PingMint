@@ -44,7 +44,25 @@ NETPACKETS_ABI = [
 
 class BatchTransfer:
     def __init__(self):
-        self.rpc_url = os.getenv("BASE_RPC_URL", "https://mainnet.base.org")
+        # Try multiple RPC endpoints
+        rpc_urls = [
+            os.getenv("BASE_RPC_URL", "https://mainnet.base.org"),
+            "https://base.gateway.tenderly.co",
+            "https://base-rpc.publicnode.com"
+        ]
+        
+        self.rpc_url = None
+        for url in rpc_urls:
+            try:
+                test_w3 = Web3(Web3.HTTPProvider(url))
+                if test_w3.is_connected():
+                    self.rpc_url = url
+                    break
+            except:
+                continue
+        
+        if not self.rpc_url:
+            self.rpc_url = rpc_urls[0]  # Fallback to first one
         private_key = os.getenv("PRIVATE_KEY")
         
         if not private_key:
@@ -87,11 +105,17 @@ class BatchTransfer:
         else:
             return self._get_nfts_by_scanning()
     
-    def _get_nfts_from_events(self, blocks_back=50000):
+    def _get_nfts_from_events(self, blocks_back=10000):
         """Fast method: Get NFTs by scanning Transfer events"""
         print(f"🔍 Scanning Transfer events (last {blocks_back:,} blocks)...")
         
-        current_block = self.w3.eth.block_number
+        try:
+            current_block = self.w3.eth.block_number
+        except Exception as e:
+            print(f"  ⚠️  Could not get current block: {e}")
+            print(f"  💡 Falling back to scanning method...")
+            return self._get_nfts_by_scanning(max_check=2000)
+        
         from_block = max(0, current_block - blocks_back)
         
         # Transfer event signature: Transfer(address indexed from, address indexed to, uint256 indexed tokenId)
@@ -104,32 +128,37 @@ class BatchTransfer:
         potential_nfts = set()
         
         try:
-            # Get logs in chunks to avoid RPC limits
-            chunk_size = 10000
+            # Get logs in smaller chunks to avoid RPC limits
+            chunk_size = 2000  # Smaller chunks for public RPC
             for chunk_start in range(from_block, current_block + 1, chunk_size):
                 chunk_end = min(chunk_start + chunk_size - 1, current_block)
                 
-                logs = self.w3.eth.get_logs({
-                    'fromBlock': chunk_start,
-                    'toBlock': chunk_end,
-                    'address': NETPACKETS_CONTRACT,
-                    'topics': [transfer_topic, None, my_address_padded]
-                })
-                
-                for log in logs:
-                    if len(log['topics']) >= 4:
-                        token_id = int(log['topics'][3].hex(), 16)
-                        potential_nfts.add(token_id)
+                try:
+                    logs = self.w3.eth.get_logs({
+                        'fromBlock': chunk_start,
+                        'toBlock': chunk_end,
+                        'address': NETPACKETS_CONTRACT,
+                        'topics': [transfer_topic, None, my_address_padded]
+                    })
+                    
+                    for log in logs:
+                        if len(log['topics']) >= 4:
+                            token_id = int(log['topics'][3].hex(), 16)
+                            potential_nfts.add(token_id)
+                except Exception as chunk_error:
+                    print(f"  ⚠️  Error in chunk {chunk_start}-{chunk_end}: {chunk_error}")
+                    continue
                 
                 if chunk_end >= current_block:
                     break
                     
-                print(f"  ⏳ Processed blocks {chunk_start:,} - {chunk_end:,}, found {len(potential_nfts)} potential NFTs...")
+                if len(potential_nfts) > 0:
+                    print(f"  ⏳ Processed blocks {chunk_start:,} - {chunk_end:,}, found {len(potential_nfts)} potential NFTs...")
         
         except Exception as e:
             print(f"  ⚠️  Error getting events: {e}")
-            print(f"  💡 Falling back to direct balance check...")
-            return self._get_nfts_by_balance()
+            print(f"  💡 Trying scanning method instead...")
+            return self._get_nfts_by_scanning(max_check=2000)
         
         print(f"  ✅ Found {len(potential_nfts)} NFTs received")
         
@@ -160,22 +189,22 @@ class BatchTransfer:
         return my_nfts
     
     def _get_nfts_by_balance(self):
-        """Try to get NFTs using balanceOf and tokenOfOwnerByIndex if available"""
+        """Try to get NFTs using balanceOf"""
         try:
             balance = self.netpackets.functions.balanceOf(self.address).call()
             print(f"  📊 Balance shows: {balance} NFTs")
             
             if balance == 0:
+                print(f"  ℹ️  No NFTs in this wallet\n")
                 return []
             
-            # Contract might not have tokenOfOwnerByIndex, so we'll need manual scan
-            print(f"  ⚠️  Cannot get specific token IDs automatically")
-            print(f"  💡 Please use manual mode or increase scan range\n")
-            return []
+            print(f"  💡 You have {balance} NFTs but need to use scanning to find them...")
+            return self._get_nfts_by_scanning(max_check=2000)
             
         except Exception as e:
             print(f"  ⚠️  Could not check balance: {e}")
-            return []
+            print(f"  💡 Trying direct scan...")
+            return self._get_nfts_by_scanning(max_check=2000)
     
     def _get_nfts_by_scanning(self, max_check=5000):
         """Slow method: Check each token ID individually"""
