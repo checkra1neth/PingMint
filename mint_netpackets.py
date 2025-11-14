@@ -222,21 +222,28 @@ class NetPacketsMinter:
                 gas_price_gwei = self.w3.from_wei(effective_gas_price, 'gwei')
                 gas_cost_eth = self.w3.from_wei(gas_used * effective_gas_price, 'ether')
                 
-                # Extract token ID from logs
+                # Extract token ID from logs (Transfer event from NetPackets contract)
                 token_id = None
+                netpackets_address_lower = NETPACKETS_CONTRACT.lower()
+                
                 for log in receipt['logs']:
-                    if log['topics'] and len(log['topics']) > 3:
-                        # Transfer event: Transfer(address indexed from, address indexed to, uint256 indexed tokenId)
-                        if log['topics'][0].hex() == '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef':
-                            token_id = int(log['topics'][3].hex(), 16)
-                            break
+                    # Check if this log is from NetPackets contract
+                    if log['address'].lower() == netpackets_address_lower:
+                        # Check if this is Transfer event with correct number of topics
+                        if log['topics'] and len(log['topics']) == 4:
+                            # Transfer event: Transfer(address indexed from, address indexed to, uint256 indexed tokenId)
+                            if log['topics'][0].hex() == '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef':
+                                token_id = int(log['topics'][3].hex(), 16)
+                                break
                 
                 print(f"✅ Mint #{mint_number} successful!")
                 if token_id:
                     print(f"🎫 Token ID: {token_id}")
                 print(f"⛽ Gas used: {gas_used} ({gas_price_gwei:.2f} Gwei)")
                 print(f"💸 Transaction cost: {gas_cost_eth:.6f} ETH")
-                return token_id
+                
+                # Return token_id or True (if token_id extraction failed but mint succeeded)
+                return token_id if token_id else True
             else:
                 print(f"❌ Mint #{mint_number} failed!")
                 return None
@@ -323,17 +330,16 @@ class NetPacketsMinter:
         minted_token_ids = []
         
         for i in range(1, self.mint_count + 1):
-            token_id = self.mint_nft(i)
+            result = self.mint_nft(i)
             
-            if token_id is not None:
+            if result:  # True or token_id (int) = success, None/False = fail
                 successful_mints += 1
-                minted_token_ids.append(token_id)
+                # Only add to list if we got actual token ID (needed for transfers)
+                if isinstance(result, int):
+                    minted_token_ids.append(result)
             else:
                 failed_mints += 1
-                response = input("\n❓ Continue to next mint? (y/n): ")
-                if response.lower() != 'y':
-                    print("❌ Aborted by user")
-                    break
+                print(f"⚠️  Mint #{i} failed, continuing...")
             
             # Wait between mints (except for the last one)
             if i < self.mint_count:
@@ -375,10 +381,7 @@ class NetPacketsMinter:
                     successful_transfers += 1
                 else:
                     failed_transfers += 1
-                    response = input("\n❓ Continue to next transfer? (y/n): ")
-                    if response.lower() != 'y':
-                        print("❌ Transfers aborted by user")
-                        break
+                    print(f"⚠️  Transfer failed, continuing...")
                 
                 # Wait between transfers (except for the last one)
                 if idx < len(minted_token_ids) - 1 and idx < len(self.transfer_addresses) - 1:

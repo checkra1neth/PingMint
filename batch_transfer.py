@@ -14,7 +14,7 @@ load_dotenv()
 
 # Contract addresses on Base
 NETPACKETS_CONTRACT = "0x4daBb4f0BCEc4Ece9fE4a8F5d709DA9CDc78bAE1"
-BULK_TRANSFER_CONTRACT = "0x0000000000c2d145a2526bd8c716263bfebe1a72"  # Seaport-like bulk transfer
+MULTICALL3_CONTRACT = "0xcA11bde05977b3631167028862bE2a173976CA11"  # Official Multicall3 on Base
 
 # Minimal ABI for transfers
 NETPACKETS_ABI = [
@@ -65,12 +65,25 @@ NETPACKETS_ABI = [
     }
 ]
 
-# Simplified Bulk Transfer ABI
-BULK_TRANSFER_ABI = [
+# Multicall3 ABI (for batch operations)
+MULTICALL3_ABI = [
     {
-        "inputs": [],
-        "name": "bulkTransfer",
-        "outputs": [],
+        "inputs": [
+            {
+                "components": [
+                    {"internalType": "address", "name": "target", "type": "address"},
+                    {"internalType": "bytes", "name": "callData", "type": "bytes"}
+                ],
+                "internalType": "struct Multicall3.Call[]",
+                "name": "calls",
+                "type": "tuple[]"
+            }
+        ],
+        "name": "aggregate",
+        "outputs": [
+            {"internalType": "uint256", "name": "blockNumber", "type": "uint256"},
+            {"internalType": "bytes[]", "name": "returnData", "type": "bytes[]"}
+        ],
         "stateMutability": "payable",
         "type": "function"
     }
@@ -131,9 +144,9 @@ class BatchTransfer:
             address=Web3.to_checksum_address(NETPACKETS_CONTRACT),
             abi=NETPACKETS_ABI
         )
-        self.bulk_transfer = self.w3.eth.contract(
-            address=Web3.to_checksum_address(BULK_TRANSFER_CONTRACT),
-            abi=BULK_TRANSFER_ABI
+        self.multicall3 = self.w3.eth.contract(
+            address=Web3.to_checksum_address(MULTICALL3_CONTRACT),
+            abi=MULTICALL3_ABI
         )
         
         print(f"✅ Connected to Base network")
@@ -159,7 +172,7 @@ class BatchTransfer:
             return self._get_nfts_by_scanning()
     
     def _get_nfts_from_api(self):
-        """Instant method: Use Alchemy NFT API (OpenSea style)"""
+        """Instant method: Use Alchemy NFT API v2 (Official method from docs)"""
         print(f"⚡ Trying instant API lookup (like OpenSea)...")
         
         try:
@@ -172,7 +185,8 @@ class BatchTransfer:
                 print(f"  ℹ️  No Alchemy API, using event scanning...\n")
                 return None
             
-            api_url = f"https://base-mainnet.g.alchemy.com/nft/v3/{api_key}/getNFTsForOwner"
+            # Official v2 API format from Alchemy docs
+            api_url = f"https://base-mainnet.g.alchemy.com/v2/{api_key}/getNFTs/"
             
             params = {
                 "owner": self.address,
@@ -186,9 +200,14 @@ class BatchTransfer:
                 data = response.json()
                 token_ids = []
                 
+                # Parse NFTs from v2 API response
                 for nft in data.get("ownedNfts", []):
-                    token_id_hex = nft.get("tokenId", nft.get("id", {}).get("tokenId", "0"))
-                    token_id = int(token_id_hex, 16) if token_id_hex.startswith("0x") else int(token_id_hex)
+                    # v2 API returns tokenId in "id" object
+                    token_id_hex = nft.get("id", {}).get("tokenId", "0")
+                    if isinstance(token_id_hex, str):
+                        token_id = int(token_id_hex, 16) if token_id_hex.startswith("0x") else int(token_id_hex)
+                    else:
+                        token_id = int(token_id_hex)
                     token_ids.append(token_id)
                 
                 if token_ids:
@@ -200,6 +219,12 @@ class BatchTransfer:
                     if len(token_ids) > 10:
                         preview_str += f", ... (+{len(token_ids) - 10} more)"
                     print(f"📦 Your NFTs: {preview_str}\n")
+                    
+                    # Handle pagination if there's a pageKey
+                    page_key = data.get("pageKey")
+                    if page_key:
+                        print(f"  💡 Note: More than {len(token_ids)} NFTs detected")
+                        print(f"  💡 First {len(token_ids)} NFTs shown (pagination available)\n")
                     
                     return token_ids
                 else:
@@ -391,24 +416,26 @@ class BatchTransfer:
         
         return my_nfts
     
-    def approve_bulk_transfer(self):
-        """Approve bulk transfer contract to manage NFTs"""
-        print(f"\n🔐 Checking approval for bulk transfer contract...")
+    def approve_multicall(self):
+        """Approve Multicall3 contract to manage NFTs"""
+        print(f"\n🔐 Checking approval for Multicall3 contract...")
         
         try:
+            multicall_address = Web3.to_checksum_address(MULTICALL3_CONTRACT)
+            
             is_approved = self.netpackets.functions.isApprovedForAll(
                 self.address,
-                BULK_TRANSFER_CONTRACT
+                multicall_address
             ).call()
             
             if is_approved:
-                print(f"✅ Bulk transfer contract already approved\n")
+                print(f"✅ Multicall3 already approved\n")
                 return True
             
-            print(f"📝 Approving bulk transfer contract...")
+            print(f"📝 Approving Multicall3 contract...")
             
             tx = self.netpackets.functions.setApprovalForAll(
-                BULK_TRANSFER_CONTRACT,
+                multicall_address,
                 True
             ).build_transaction({
                 'from': self.address,
@@ -425,7 +452,7 @@ class BatchTransfer:
             receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
             
             if receipt['status'] == 1:
-                print(f"✅ Bulk transfer contract approved!\n")
+                print(f"✅ Multicall3 approved!\n")
                 return True
             else:
                 print(f"❌ Approval failed!\n")
@@ -436,41 +463,77 @@ class BatchTransfer:
             return False
     
     def bulk_transfer_external(self, token_ids, to_address):
-        """Use external bulk transfer contract to send all NFTs in ONE transaction"""
+        """Use Multicall3 to send all NFTs in ONE transaction"""
         print(f"\n{'='*60}")
-        print(f"⚡ EXTERNAL BULK TRANSFER (ONE Transaction)")
+        print(f"⚡ BATCH TRANSFER (ONE Transaction)")
         print(f"{'='*60}")
         print(f"📦 Tokens: {len(token_ids)} NFTs")
         print(f"📬 To: {to_address}")
         print(f"{'='*60}\n")
         
-        # Approve bulk transfer contract first
-        if not self.approve_bulk_transfer():
-            print(f"❌ Failed to approve bulk transfer contract")
+        # Approve Multicall3 first
+        if not self.approve_multicall():
+            print(f"❌ Failed to approve Multicall3 contract")
             return False
         
         try:
-            # Build the calldata for bulkTransfer
-            # Format: array of [type, contract, tokenId, amount]
-            transfers = []
+            to_checksum = Web3.to_checksum_address(to_address)
+            
+            # Build array of calls for Multicall3
+            calls = []
             for token_id in token_ids:
-                transfers.append([
-                    2,  # ERC-721
-                    NETPACKETS_CONTRACT,
-                    token_id,
-                    1  # amount (always 1 for ERC-721)
-                ])
+                # Encode transferFrom(from, to, tokenId) call
+                calldata = self.netpackets.functions.transferFrom(
+                    self.address, to_checksum, token_id
+                )._encode_transaction_data()
+                calls.append((NETPACKETS_CONTRACT, calldata))
             
-            # This is complex encoding - use raw calldata
-            print(f"⚠️  Note: Using external bulk transfer requires complex encoding")
-            print(f"💡 Falling back to rapid sequential transfer for reliability\n")
+            print(f"🔨 Building batch transaction with {len(calls)} transfers...")
             
-            return self.rapid_sequential_transfer(token_ids, to_address)
+            # Build Multicall3 transaction
+            tx = self.multicall3.functions.aggregate(calls).build_transaction({
+                'from': self.address,
+                'nonce': self.w3.eth.get_transaction_count(self.address),
+            })
+            
+            # Display gas info
+            base_fee = self.w3.eth.get_block('latest')['baseFeePerGas']
+            print(f"⛽ Network base fee: {self.w3.from_wei(base_fee, 'gwei'):.2f} Gwei")
+            print(f"⛽ Estimated gas: {tx.get('gas', 'auto'):,}")
+            
+            # Sign and send
+            print(f"\n📤 Sending batch transaction...")
+            signed_tx = self.w3.eth.account.sign_transaction(tx, self.private_key)
+            tx_hash = self.w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+            
+            print(f"✅ TX Hash: {tx_hash.hex()}")
+            print(f"🔗 https://basescan.org/tx/{tx_hash.hex()}")
+            
+            # Wait for confirmation
+            print(f"\n⏳ Waiting for confirmation...")
+            receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=180)
+            
+            if receipt['status'] == 1:
+                gas_used = receipt['gasUsed']
+                effective_gas_price = receipt['effectiveGasPrice']
+                gas_cost_eth = self.w3.from_wei(gas_used * effective_gas_price, 'ether')
+                
+                print(f"\n{'='*60}")
+                print(f"✅ BATCH TRANSFER SUCCESSFUL!")
+                print(f"{'='*60}")
+                print(f"📦 Transferred {len(token_ids)} NFTs in ONE transaction")
+                print(f"⛽ Gas used: {gas_used:,}")
+                print(f"💸 Total cost: {gas_cost_eth:.6f} ETH")
+                print(f"💡 Cost per NFT: {gas_cost_eth/len(token_ids):.8f} ETH")
+                print(f"{'='*60}\n")
+                return True
+            else:
+                print(f"\n❌ Batch transfer failed!")
+                return False
                 
         except Exception as e:
             print(f"❌ Error: {e}")
-            print(f"💡 Falling back to rapid sequential transfer\n")
-            return self.rapid_sequential_transfer(token_ids, to_address)
+            return False
     
     def batch_transfer_single_tx(self, token_ids, to_address):
         """Transfer multiple NFTs in a single transaction using batchTransferFrom"""
@@ -525,101 +588,8 @@ class BatchTransfer:
                 return False
                 
         except Exception as e:
-            error_msg = str(e)
-            if "batchTransferFrom" in error_msg or "not found" in error_msg.lower():
-                print(f"\n⚠️  Contract doesn't support batchTransferFrom")
-                print(f"💡 Falling back to rapid sequential transfers...\n")
-                return self.rapid_sequential_transfer(token_ids, to_address)
-            else:
-                print(f"\n❌ Error in batch transfer: {e}")
-                return False
-    
-    def rapid_sequential_transfer(self, token_ids, to_address):
-        """Transfer multiple NFTs rapidly in sequence (pre-build all transactions)"""
-        print(f"\n{'='*60}")
-        print(f"⚡ RAPID SEQUENTIAL TRANSFER")
-        print(f"{'='*60}")
-        print(f"📦 Token IDs: {', '.join(map(str, token_ids))}")
-        print(f"📬 To: {to_address}")
-        print(f"{'='*60}\n")
-        
-        base_nonce = self.w3.eth.get_transaction_count(self.address)
-        transactions = []
-        
-        print(f"🔨 Building {len(token_ids)} transactions...")
-        
-        # Pre-build all transactions with sequential nonces
-        for idx, token_id in enumerate(token_ids):
-            try:
-                tx = self.netpackets.functions.transferFrom(
-                    self.address,
-                    Web3.to_checksum_address(to_address),
-                    token_id
-                ).build_transaction({
-                    'from': self.address,
-                    'nonce': base_nonce + idx,
-                })
-                transactions.append((token_id, tx))
-                print(f"  ✓ TX {idx+1}/{len(token_ids)} built (Token #{token_id}, nonce: {base_nonce + idx})")
-            except Exception as e:
-                print(f"  ✗ Failed to build TX for token #{token_id}: {e}")
-                return False
-        
-        print(f"\n📤 Sending {len(transactions)} transactions rapidly...")
-        
-        sent_hashes = []
-        total_gas_used = 0
-        total_cost = 0
-        
-        # Send all transactions as fast as possible
-        for idx, (token_id, tx) in enumerate(transactions):
-            try:
-                signed_tx = self.w3.eth.account.sign_transaction(tx, self.private_key)
-                tx_hash = self.w3.eth.send_raw_transaction(signed_tx.raw_transaction)
-                sent_hashes.append((token_id, tx_hash))
-                print(f"  ✓ Sent {idx+1}/{len(transactions)}: Token #{token_id} | {tx_hash.hex()[:16]}...")
-            except Exception as e:
-                print(f"  ✗ Failed to send token #{token_id}: {e}")
-        
-        print(f"\n⏳ Waiting for all {len(sent_hashes)} transactions to confirm...")
-        
-        successful = 0
-        failed = 0
-        
-        # Wait for all confirmations
-        for idx, (token_id, tx_hash) in enumerate(sent_hashes):
-            try:
-                print(f"  ⏳ Waiting for TX {idx+1}/{len(sent_hashes)}...", end=" ")
-                receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
-                
-                if receipt['status'] == 1:
-                    gas_used = receipt['gasUsed']
-                    effective_gas_price = receipt['effectiveGasPrice']
-                    cost = gas_used * effective_gas_price
-                    total_gas_used += gas_used
-                    total_cost += cost
-                    successful += 1
-                    print(f"✅")
-                else:
-                    failed += 1
-                    print(f"❌")
-            except Exception as e:
-                failed += 1
-                print(f"❌ Timeout or error")
-        
-        # Summary
-        print(f"\n{'='*60}")
-        print(f"📊 RAPID TRANSFER SUMMARY")
-        print(f"{'='*60}")
-        print(f"✅ Successful: {successful}/{len(token_ids)}")
-        print(f"❌ Failed: {failed}/{len(token_ids)}")
-        print(f"⛽ Total gas used: {total_gas_used:,}")
-        print(f"💸 Total cost: {self.w3.from_wei(total_cost, 'ether'):.6f} ETH")
-        if successful > 0:
-            print(f"💡 Average cost per NFT: {self.w3.from_wei(total_cost/successful, 'ether'):.8f} ETH")
-        print(f"{'='*60}\n")
-        
-        return successful == len(token_ids)
+            print(f"\n❌ Error in batch transfer: {e}")
+            return False
     
     def transfer_to_multiple(self, token_ids, addresses):
         """Transfer NFTs to multiple addresses (one NFT per address)"""
@@ -717,20 +687,10 @@ def main():
                 if len(token_ids) > 10:
                     print(f"    ... and {len(token_ids) - 10} more")
                 
-                # Choose transfer method
-                print(f"\nChoose transfer method:")
-                print(f"1. Rapid sequential (multiple txs, ~1-2 min for {count} NFTs)")
-                print(f"2. Try external bulk transfer (experimental, ONE tx)")
-                
-                method = input("\nEnter method (1 or 2, default 1): ").strip() or "1"
-                
                 confirm = input("\nProceed? (y/n): ").strip().lower()
                 
                 if confirm == 'y':
-                    if method == "2":
-                        batch.bulk_transfer_external(token_ids, to_address)
-                    else:
-                        batch.rapid_sequential_transfer(token_ids, to_address)
+                    batch.bulk_transfer_external(token_ids, to_address)
             
             elif mode == "2":
                 # Transfer to multiple addresses
